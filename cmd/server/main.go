@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+	"gopkg.in/natefinch/lumberjack.v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -119,8 +121,10 @@ func main() {
 
 	sessions := newSessionStore()
 
+	initLogger()
 	router := gin.Default()
 	registerStaticRoutes(router)
+	router.Use(JSONLogger())
 
 	auth := router.Group("/api/auth")
 	{
@@ -131,14 +135,22 @@ func main() {
 				return
 			}
 
+			if err != nil {
+				c.JSON(400, gin.H{"error": "유저 추가 실패"})
+				return
+			}
+
+			s := store
+			s.db.Exec(`INSERT INTO users (username, name, email, phone, password, balance, is_admin)VALUES (?, ?, ?, ?, ?, 0, 0);`, request.Username, request.Name, request.Email, request.Phone, request.Password)
 			c.JSON(http.StatusAccepted, gin.H{
-				"message": "dummy register handler",
-				"todo":    "replace with actual signup validation and insert query",
+
+				"message": "회원가입에 성공하셨습니다.",
 				"user": gin.H{
 					"username": request.Username,
 					"name":     request.Name,
 					"email":    request.Email,
 					"phone":    request.Phone,
+					"password": request.Password,
 				},
 			})
 		})
@@ -157,6 +169,8 @@ func main() {
 			}
 			if !ok || user.Password != request.Password {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid credentials"})
+				println(user.Password)
+				println(request.Password)
 				return
 			}
 
@@ -212,16 +226,30 @@ func main() {
 				return
 			}
 
-			c.JSON(http.StatusAccepted, gin.H{
-				"message": "dummy withdraw handler",
-				"todo":    "replace with password check and account delete logic",
-				"user":    makeUserResponse(user),
-			})
+			if request.Password == user.Password {
+
+				s := store
+				s.db.Exec(`DELETE FROM users WHERE id =?;`, user.ID)
+				c.JSON(http.StatusAccepted, gin.H{
+					"message": "success",
+					"todo":    "success to remove your data",
+					"user":    makeUserResponse(user),
+				})
+			} else {
+				c.JSON(http.StatusAccepted, gin.H{
+					"message": "fail",
+					"todo":    "fail to remove your data",
+					"user":    makeUserResponse(user),
+				})
+			}
+
 		})
 	}
 
 	protected := router.Group("/api")
 	{
+
+		s := store
 		protected.GET("/me", func(c *gin.Context) {
 			token := tokenFromRequest(c)
 			if token == "" {
@@ -233,17 +261,21 @@ func main() {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid authorization token"})
 				return
 			}
-
+			if err != nil {
+				log.Fatal(err)
+			}
+			user, ok, err = store.findUserByUsername(user.Username)
 			c.JSON(http.StatusOK, gin.H{"user": makeUserResponse(user)})
-		})
 
+		})
+		//checkpoint
 		protected.POST("/banking/deposit", func(c *gin.Context) {
 			var request DepositRequest
+
 			if err := c.ShouldBindJSON(&request); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"message": "invalid deposit request"})
 				return
 			}
-
 			token := tokenFromRequest(c)
 			if token == "" {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "missing authorization token"})
@@ -254,13 +286,23 @@ func main() {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid authorization token"})
 				return
 			}
+			if request.Amount > 0 {
 
-			c.JSON(http.StatusOK, gin.H{
-				"message": "dummy deposit handler",
-				"todo":    "replace with balance increment query",
-				"user":    makeUserResponse(user),
-				"amount":  request.Amount,
-			})
+				user, ok, err = store.findUserByUsername(user.Username)
+				c.JSON(http.StatusOK, gin.H{
+					"message": "성공적으로 입금이 완료되었습니다.",
+					"user":    makeUserResponse(user),
+					"balance": user.Balance,
+				})
+				s.db.Exec(`UPDATE users SET balance = balance + ? WHERE id = ?;`, request.Amount, user.ID)
+			} else {
+				c.JSON(http.StatusOK, gin.H{
+					"message": "0원 보다 작은 입금은 불가능 합니다.",
+					"user":    makeUserResponse(user),
+					"amount":  request.Amount,
+				})
+			}
+
 		})
 
 		protected.POST("/banking/withdraw", func(c *gin.Context) {
@@ -281,15 +323,33 @@ func main() {
 				return
 			}
 
-			c.JSON(http.StatusOK, gin.H{
-				"message": "dummy withdraw handler",
-				"todo":    "replace with balance check and decrement query",
-				"user":    makeUserResponse(user),
-				"amount":  request.Amount,
-			})
+			if request.Amount > 0 {
+				user, ok, err = store.findUserByUsername(user.Username)
+				if user.Balance > request.Amount {
+					c.JSON(http.StatusOK, gin.H{
+
+						"message": "성공적으로 출금이 완료되었습니다.",
+						"balance": user.Balance + request.Amount,
+					})
+
+					s.db.Exec(`UPDATE users SET balance = balance - ? WHERE id = ?;`, request.Amount, user.ID)
+				} else {
+					c.JSON(http.StatusOK, gin.H{
+
+						"message": "송금 금액이 부족합니다.",
+					})
+				}
+			} else {
+				c.JSON(http.StatusOK, gin.H{
+					"message": "0원 보다 작은 출금은 불가능 합니다.",
+					"user":    makeUserResponse(user),
+					"amount":  request.Amount,
+				})
+			}
 		})
 
 		protected.POST("/banking/transfer", func(c *gin.Context) {
+
 			var request TransferRequest
 			if err := c.ShouldBindJSON(&request); err != nil {
 				c.JSON(http.StatusBadRequest, gin.H{"message": "invalid transfer request"})
@@ -307,13 +367,35 @@ func main() {
 				return
 			}
 
-			c.JSON(http.StatusOK, gin.H{
-				"message": "dummy transfer handler",
-				"todo":    "replace with transfer transaction and balance checks",
-				"user":    makeUserResponse(user),
-				"target":  request.ToUsername,
-				"amount":  request.Amount,
-			})
+			user, ok, err = store.findUserByUsername(user.Username)
+			if user.Balance < request.Amount {
+				c.JSON(http.StatusOK, gin.H{
+					"message": "가진돈이 부족합니다.",
+					"user":    makeUserResponse(user),
+					"target":  request.ToUsername,
+					"amount":  request.Amount,
+				})
+			} else {
+				if request.Amount > 0 {
+					c.JSON(http.StatusOK, gin.H{
+						"message": "송금완료",
+						"user":    makeUserResponse(user),
+						"target":  request.ToUsername,
+						"amount":  request.Amount,
+					})
+					s.db.Exec(`UPDATE users SET balance = balance + ? WHERE username = ?;`, request.Amount, request.ToUsername)
+					s.db.Exec(`UPDATE users SET balance = balance - ? WHERE username = ?;`, request.Amount, user.Username)
+				} else {
+					c.JSON(http.StatusOK, gin.H{
+						"message": "음수의 금액을 보낼수 없습니다.",
+						"user":    makeUserResponse(user),
+						"target":  request.ToUsername,
+						"amount":  request.Amount,
+					})
+				}
+
+			}
+
 		})
 
 		protected.GET("/posts", func(c *gin.Context) {
@@ -326,21 +408,25 @@ func main() {
 				c.JSON(http.StatusUnauthorized, gin.H{"message": "invalid authorization token"})
 				return
 			}
-
-			c.JSON(http.StatusOK, PostListResponse{
-				Posts: []PostView{
-					{
-						ID:          1,
-						Title:       "Dummy Post",
-						Content:     "This is a fixed dummy response. Replace this later with real board logic.",
-						OwnerID:     1,
-						Author:      "Alice Admin",
-						AuthorEmail: "alice.admin@example.com",
-						CreatedAt:   "2026-03-19T09:00:00Z",
-						UpdatedAt:   "2026-03-19T09:00:00Z",
+			for i := 1; i <= 5; i++ {
+				pos, _, _ := s.findposts(i)
+				c.JSON(http.StatusOK, PostListResponse{
+					Posts: []PostView{
+						{
+							ID:          pos.ID,
+							Title:       pos.Title,
+							Content:     pos.Content,
+							OwnerID:     pos.OwnerID,
+							Author:      pos.Author,
+							AuthorEmail: pos.AuthorEmail,
+							CreatedAt:   pos.CreatedAt,
+							UpdatedAt:   pos.UpdatedAt,
+						},
 					},
-				},
-			})
+				})
+
+			}
+
 		})
 
 		protected.POST("/posts", func(c *gin.Context) {
@@ -362,6 +448,8 @@ func main() {
 			}
 
 			now := time.Now().Format(time.RFC3339)
+			s.db.Exec(`INSERT INTO posts (title,content,owner_id,created_at,updated_at)VALUES(?,?,?,?,?);`, request.Title, request.Content, user.ID, now, now)
+
 			c.JSON(http.StatusCreated, gin.H{
 				"message": "dummy create post handler",
 				"todo":    "replace with insert query",
@@ -522,6 +610,23 @@ func (s *Store) findUserByUsername(username string) (User, bool, error) {
 	return user, true, nil
 }
 
+func (s *Store) findposts(id_ int) (PostView, bool, error) {
+	row := s.db.QueryRow(`
+		SELECT id,title,content,owner_id,created_at,updated_at,owner_id
+		FROM posts
+		WHERE id = ?
+	`, id_)
+	var post PostView
+	if err := row.Scan(&post.ID, &post.Title, &post.Content, &post.OwnerID, &post.CreatedAt, &post.UpdatedAt, &post.OwnerID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return PostView{}, false, nil
+		}
+		return PostView{}, false, err
+	}
+
+	return post, true, nil
+}
+
 func newSessionStore() *SessionStore {
 	return &SessionStore{
 		tokens: make(map[string]User),
@@ -601,4 +706,28 @@ func newSessionToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buffer), nil
+}
+func initLogger() {
+	os.MkdirAll("logs", 0755)
+	log.SetFormatter(&log.JSONFormatter{})
+	log.SetOutput(&lumberjack.Logger{
+		Filename:   "./logs/All.log",
+		MaxSize:    1,
+		MaxBackups: 5,
+		MaxAge:     30,
+		Compress:   true,
+	})
+}
+func JSONLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		log.WithFields(log.Fields{
+			"ip":     c.ClientIP(),
+			"method": c.Request.Method,
+			"path":   c.Request.URL.Path,
+			"query":  c.Request.URL.RawQuery,
+			"header": c.Request.Header,
+			"body":   c.Request.Body,
+		}).Info("incoming request")
+		c.Next()
+	}
 }

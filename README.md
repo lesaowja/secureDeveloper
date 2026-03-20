@@ -1,95 +1,73 @@
-# Go Secure Coding Practice
+main.go :116
+store 에 openstore 확인
+일반 db.Exec가 아닌 
+store.db.Exec가 명령어 
 
-보안 코딩 연습을 위한 시작 프로젝트입니다.
+main.go :144
+s.db.Exec(`INSERT INTO users (username, name, email, phone, password, balance, is_admin)VALUES (?, ?, ?, ?, ?, 0, 0);`, request.Username, request.Name, request.Email, request.Phone, request.Password)
+Sqlinjection을 피하기 위한 ?사용으로 들어가는 내용 자체를 문자열로 인식하게 변환 후 입력
 
-처음부터 구조를 예쁘게 나누기보다, `cmd/server/main.go` 하나에 코드를 모아 둔 상태에서
-먼저 흐름을 이해하고 직접 분리 기준을 고민할 수 있게 만드는 것이 목적입니다.
+main.go:229
+회원 탈퇴 시에 패스워드가 맞는지를 확인하기 위해 
+request.Password == user.Password
+조건만족시 탈퇴 가능 4번 계정 삭제시 1 2 3 5번 확인 완료
 
-지난 과제와 수업에서 설명했던 내용, 그리고 전달된 가이드 문서를 떠올리면서
-어떤 기능부터 구현하고 어떤 기준으로 나눌지 스스로 판단해 보세요.
+main.go:289
+돈 입금 금액이 0원을 넘는지 확인 
+if request.Amount > 0
+조건에 넘는다면 입금 진행
 
-## 프로젝트 목적
+실시간으로 user에 값이 변하지않고 이전에 지닌값만 비교하기에 장애 발생하여 user가 가져오는 값을 refresh하는 함수 발견
+user, ok, err = store.findUserByUsername(user.Username)
+이후 실시간으로 금액 늘어나는내용 확인 
 
-- 로그인 흐름을 먼저 이해하기
-- 더미 API를 실제 동작 코드로 바꿔 보기
-- 게시판과 금융 기능을 단계적으로 채워 보기
-- 입력 검증, 인증 확인, 권한 검사, 응답 설계를 직접 고민해 보기
-- 구현 후 어떤 코드들을 묶어 리팩터링할지 판단해 보기
+main.go:326
+출금은 조건 2개가 필요 
+request.Amount > 0 출금액이 음수가 되지않을것, 
+user.Balance > request.Amount,가진 금액보다 출금을 많이하지 못하게 할것,
 
-## 현재 상태
+main.go:370
+user.Balance < request.Amount 내가 가진금액보다 돈을 더 많이 보내려 할때 체크가 필요하고
+request.Amount > 0 음수의 금액을 보내진 않는가
+마지막으로 해당 유저가 DB상으로 실제로 존재하는가 의 체크가 필요하나 마지막은 능력이 부족하여 하지 못하였습니다. 
 
-- 서버 코드는 현재 `cmd/server/main.go` 하나에 들어 있습니다.
-- 로그인만 SQLite 조회를 사용합니다.
-- 로그인 성공 시 `authorization` 쿠키와 `Authorization` 헤더용 토큰을 함께 사용할 수 있습니다.
-- 세션은 DB가 아니라 메모리 맵으로 관리합니다.
-- 게시판 API는 고정 더미 응답을 반환합니다.
-- 금융 API는 더미 응답을 반환합니다.
-- 정적 화면은 SPA 형태로 준비되어 있습니다.
+main.go:432
+위의 users테이블과 다르게 POST posts테이블에 원하는 데이터를 넣고 GET /posts 시에 출력
+하기위해 
+main.go:613 func (s *Store) findposts(id_ int) (PostView, bool, error) 
+을 만들어 posts테이블에 원하는 데이터 삽입 
 
-## 기본 계정
+main.go:411 에서 하나씩 배열로 집어넣고 생성을 하고싶었으나 시간부족으로 개발 불가
 
-- `alice / alice1234`
-- `bob / bob1234`
-- `charlie / charlie1234`
+성적 평가 이후 나머지의 개발과 아래의 파일로 나누어 가져오고 아직 미처 확인하지 못했던 middleware설정을 하고
+현재는 로그인이 안돼어 있어도 authorization token 만을 비교하기에 로그인하지 못하면 다른 링크는 접속못하거나 login으로 연결되게 하는 설정
+로그인이 되어있다고 해도 admin만이 조작가능한 세팅들을 추가할 예정에 있습니다. 
 
-## 주요 API
 
-인증
-- `POST /api/auth/register`
-- `POST /api/auth/login`
-- `POST /api/auth/logout`
-- `POST /api/auth/withdraw`
+생각하던 구조는 SECUREDEVELOPER/cmd/server/main.go
+                            /src/sources/AuthHandler.go
+                            /           /UserHandler.go
+                            /           /Banksystem.go
+                            /           /PostHandler.go
+                            /
+                            /src/js/account.js
+                            /      /auth.js
+                            /      /baking.js
+                            /      /board.js
+                            /      /common.js
+                            /      /compose.js
+                            /      /post.js
+                            /      /router.js
+                            /
+                            /src/etc/index.html
+                            /       /style.css
+                            /
+                            /src/db/app.db
+                            /      /query_examples.sql
+                            /      /schema.sql
+                            /      /seed.sql
+                            /
+                            /logs/all/ALL.log
 
-사용자
-- `GET /api/me`
 
-게시판
-- `GET /api/posts`
-- `GET /api/posts/:id`
-- `POST /api/posts`
-- `PUT /api/posts/:id`
-- `DELETE /api/posts/:id`
-
-금융
-- `POST /api/banking/deposit`
-- `POST /api/banking/withdraw`
-- `POST /api/banking/transfer`
-
-## 참고 파일
-
-- `schema.sql`
-- `seed.sql`
-- `query_examples.sql`
-
-## 먼저 해볼 작업
-
-1. 회원가입 더미 핸들러를 실제 `INSERT`로 바꿔 보기
-2. 게시글 작성, 조회, 수정, 삭제를 실제 SQL 또는 원하는 저장 방식으로 바꿔 보기
-3. 입금, 출금, 송금 더미 핸들러를 실제 로직으로 바꿔 보기
-4. 실패 조건과 입력 검증 규칙을 정리해 보기
-5. 반복되는 인증 확인 코드를 어떻게 줄일지 생각해 보기
-
-## 작업하면서 점검할 질문
-
-- 이 코드는 요청 처리인지, 비즈니스 규칙인지, DB 접근인지?
-- 같은 인증 확인 코드가 반복되고 있지 않은가?
-- 게시글 수정/삭제 권한 검사는 어디에 두는 것이 자연스러운가?
-- 출금과 송금에서 어떤 실패 조건을 먼저 막아야 하는가?
-- 어떤 응답은 그대로 내려도 되고, 어떤 응답은 가공이 필요한가?
-- 언제부터 `handler`, `service`, `store` 같은 구조로 나누는 것이 좋은가?
-
-## 실행 방법
-
-프로젝트 루트에서 실행합니다.
-
-```powershell
-go run ./cmd/server
-```
-처음 상태로 다시 시작하고 싶으면 `app.db`를 지운 뒤 다시 실행하면 됩니다.
-
-### 작업한 내용의 특징에 대해서 작성해주세요
-ex)
-> main.go:30
-> xxx 한 것을 막기위해 xxx 를 적용해 방어
-
-> xxx 한 것을 고려해 구성함
+이런식으로 관리 할 것 같습니다. 
